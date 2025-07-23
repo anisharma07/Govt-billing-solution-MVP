@@ -1,4 +1,18 @@
-const SocialCalc = require("./aspiring/SocialCalc.js");
+// Import as a side-effect to load the global
+import "./aspiring/SocialCalc.js";
+
+// Access the global SocialCalc that was created by the UMD module
+let SocialCalc;
+
+// Ensure SocialCalc is loaded from the global scope
+if (typeof window !== 'undefined' && window.SocialCalc) {
+  SocialCalc = window.SocialCalc;
+} else if (typeof global !== 'undefined' && global.SocialCalc) {
+  SocialCalc = global.SocialCalc;
+} else {
+  console.error('SocialCalc not found in global scope');
+  SocialCalc = {}; // Fallback to prevent errors
+}
 
 export function getDeviceType() {
   /* Returns the type of the device */
@@ -589,6 +603,55 @@ export function getLogoCoordinates() {
   const coordinates = LOGO[deviceType] || LOGO.default;
   console.log("Selected coordinates:", coordinates);
   console.log("=== END GET LOGO COORDINATES ===");
+
+  return coordinates;
+}
+export function getSignatureCoordinates() {
+  const deviceType = getDeviceType();
+  console.log("=== GET SIGNATURE COORDINATES ===");
+  console.log("Detected device type:", deviceType);
+
+  // Import the SIGNATURE configuration (you'll need to import this)
+  // For now, returning a basic structure - you should import from app-data-new.ts
+  const SIGNATURE = {
+    iPad: {
+      sheet1: null,
+      sheet2: null,
+      sheet3: null,
+      sheet4: null,
+    },
+    iPhone: {
+      sheet1: null,
+      sheet2: null,
+      sheet3: null,
+      sheet4: null,
+      sheet5: null,
+    },
+    iPod: {
+      sheet1: null,
+      sheet2: null,
+      sheet3: null,
+      sheet4: null,
+      sheet5: null,
+    },
+    Android: {
+      sheet1: null,
+      sheet2: null,
+      sheet3: null,
+      sheet4: null,
+      sheet5: null,
+    },
+    default: {
+      sheet1: "D31",
+      sheet2: "D31",
+      sheet3: "C36",
+      sheet4: "C36",
+    },
+  };
+
+  const coordinates = SIGNATURE[deviceType] || SIGNATURE.default;
+  console.log("Selected coordinates:", coordinates);
+  console.log("=== END GET SIGNATURE COORDINATES ===");
 
   return coordinates;
 }

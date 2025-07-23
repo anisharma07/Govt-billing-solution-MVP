@@ -3,7 +3,7 @@ import * as AppGeneral from "../socialcalc/index.js";
 import { File, Local } from "../Storage/LocalStorage";
 import { isPlatform, IonToast, IonLoading } from "@ionic/react";
 import { EmailComposer } from "capacitor-email-composer";
-import { Printer } from "@ionic-native/printer";
+import { Printer } from "@bcyesil/capacitor-plugin-printer";
 import { IonActionSheet, IonAlert } from "@ionic/react";
 import {
   saveOutline,
@@ -26,6 +26,7 @@ import { exportCSV, parseSocialCalcCSV } from "../../services/exportAsCsv";
 import { Share } from "@capacitor/share";
 import { Filesystem, Directory, Encoding } from "@capacitor/filesystem";
 import MenuDialogs from "./MenuDialogs.js";
+import { cloudService } from "../../services/cloud-service.js";
 
 const Menu: React.FC<{
   showM: boolean;
@@ -43,7 +44,6 @@ const Menu: React.FC<{
   const [showAlert8, setShowAlert8] = useState(false); // For export all PDF filename
   const [showAlert9, setShowAlert9] = useState(false); // For password protection
   const [showAlert10, setShowAlert10] = useState(false); // For password input when loading
-  const [showAlert11, setShowAlert11] = useState(false); // For server save filename
   const [showAlert12, setShowAlert12] = useState(false); // For server PDF filename
   const [showToast1, setShowToast1] = useState(false);
   const [toastMessage, setToastMessage] = useState("");
@@ -94,16 +94,31 @@ const Menu: React.FC<{
     return filename;
   };
 
-  const doPrint = () => {
+  const doPrint = async () => {
     if (isPlatform("hybrid")) {
-      const printer = Printer;
-      printer.print(AppGeneral.getCurrentHTMLContent());
+      try {
+        const htmlContent = AppGeneral.getCurrentHTMLContent();
+        
+        await Printer.print({
+          content: htmlContent,
+          name: selectedFile || "Invoice",
+          orientation: "portrait"
+        });
+        
+        setToastMessage("Print job sent successfully!");
+        setShowToast1(true);
+      } catch (error) {
+        console.error("Print error:", error);
+        setToastMessage("Failed to print. Please check if a printer is available.");
+        setShowToast1(true);
+      }
     } else {
       const content = AppGeneral.getCurrentHTMLContent();
-      // useReactToPrint({ content: () => content });
       const printWindow = window.open("/printwindow", "Print Invoice");
-      printWindow.document.write(content);
-      printWindow.print();
+      if (printWindow) {
+        printWindow.document.write(content);
+        printWindow.print();
+      }
     }
   };
 
@@ -446,6 +461,113 @@ const Menu: React.FC<{
   };
 
   /**
+   * Extracts all image URLs from HTML content
+   * @param htmlContent - The HTML string to search for img tags
+   * @returns Array of URLs found in img src attributes, or -1 for non-HTTP/HTTPS URLs
+   */
+  function extractImageUrls(htmlContent: string): (string | number)[] {
+    if (!htmlContent || typeof htmlContent !== "string") {
+      return [];
+    }
+
+    // Regular expression to match img tags and capture src attribute values
+    const imgRegex = /<img[^>]+src\s*=\s*["']([^"']+)["'][^>]*>/gi;
+    const urls: (string | number)[] = [];
+    let match;
+
+    while ((match = imgRegex.exec(htmlContent)) !== null) {
+      const srcValue = match[1];
+
+      // Check if it's a valid HTTP/HTTPS URL
+      if (isValidHttpUrl(srcValue)) {
+        urls.push(srcValue);
+      } else {
+        urls.push(-1);
+      }
+    }
+
+    return urls;
+  }
+
+  /**
+   * Checks if a URL is a valid HTTP or HTTPS URL
+   * @param url - The URL string to validate
+   * @returns true if it's a valid HTTP/HTTPS URL, false otherwise
+   */
+  function isValidHttpUrl(url: string): boolean {
+    if (!url || typeof url !== "string") {
+      return false;
+    }
+
+    try {
+      const urlObj = new URL(url);
+      return urlObj.protocol === "http:" || urlObj.protocol === "https:";
+    } catch (error) {
+      // If URL constructor throws, it's not a valid URL
+      return false;
+    }
+  }
+
+  const urlsToBase64 = async (htmlContent: string): Promise<string> => {
+    const imgArr = extractImageUrls(htmlContent);
+    console.log("HTML content for server PDF:", imgArr);
+
+    const urlReplace: string[] = [];
+    if (imgArr.length > 0 && imgArr[0] !== -1) {
+      // Do something with the image array
+      console.log("Extracting image URLs:", imgArr);
+
+      for (const imgUrl of imgArr) {
+        console.log("trying to convert to base64:", imgUrl);
+        if (typeof imgUrl === "string") {
+          const parts = imgUrl.split("/");
+          const base64Response = await cloudService.convertUrlToBase64(
+            "/logos/" + parts[parts.length - 1]
+          );
+          urlReplace.push(base64Response.data_url);
+        } else {
+          urlReplace.push("0");
+        }
+      }
+    }
+
+    if (urlReplace.length > 0) {
+      // Replace URLs in the HTML content with base64 data
+      let htmlContentWithBase64 = htmlContent;
+
+      // Regular expression to match img tags and capture the entire tag
+      const imgRegex = /<img[^>]+src\s*=\s*["']([^"']+)["'][^>]*>/gi;
+      let match;
+      let imgIndex = 0;
+
+      // Process each img tag in order
+      htmlContentWithBase64 = htmlContentWithBase64.replace(
+  imgRegex,
+  (fullMatch, srcValue) => {
+    if (imgIndex < urlReplace.length) {
+      const base64Url = urlReplace[imgIndex];
+      imgIndex++;
+
+      // Keep the img tag unchanged if base64Url is "0"
+      if (base64Url === "0") {
+        return fullMatch; // Return the original img tag without changes
+      }
+
+      // Replace the src attribute with the base64 data URL
+      return fullMatch.replace(srcValue, base64Url);
+    }
+
+    return fullMatch; // Return unchanged if no replacement available
+  }
+);
+
+      return htmlContentWithBase64;
+    }
+
+    return htmlContent;
+  };
+
+  /**
    * Generate PDF on server using HTML to PDF API
    * This function sends the current spreadsheet content as HTML to the server
    * where it gets converted to PDF and returns it directly for download
@@ -454,9 +576,7 @@ const Menu: React.FC<{
     try {
       setIsGeneratingServerPDF(true);
       setServerPdfProgress("Preparing content for server PDF generation...");
-
-      // Check if user is authenticated
-      const { cloudService } = await import("../../services/cloud-service.js");
+      console.log("Generating server PDF with filename:", filename);
 
       if (!cloudService.isAuthenticated()) {
         setToastMessage(
@@ -468,8 +588,10 @@ const Menu: React.FC<{
       }
 
       // Get the current HTML content from the spreadsheet
-      const htmlContent = AppGeneral.getCurrentHTMLContent();
-      console.log("HTML content for server PDF:", htmlContent);
+      const rawHtmlContent = AppGeneral.getCurrentHTMLContent();
+      const htmlContent = await urlsToBase64(rawHtmlContent);
+      // console.log(htmlContent);
+      // return;
 
       if (!htmlContent || htmlContent.trim() === "") {
         setToastMessage("No content available to export as PDF");
@@ -481,7 +603,7 @@ const Menu: React.FC<{
       const pdfFilename = filename || selectedFile || "invoice";
 
       setServerPdfProgress("Converting HTML to PDF on server...");
-
+      console.log("PDF Filename:", pdfFilename);
       // Generate PDF using the new direct conversion API
       const pdfBlob = await cloudService.convertHTMLToPDF(htmlContent, {
         filename: `${pdfFilename}.pdf`,
@@ -494,6 +616,7 @@ const Menu: React.FC<{
           orientation: "portrait",
         },
       });
+      console.log("PDF Blob received from server:", pdfBlob);
 
       setServerPdfProgress("Processing PDF for download...");
 
@@ -528,7 +651,7 @@ const Menu: React.FC<{
               console.log("Error sharing server PDF:", shareError);
               // Fallback to direct download
               const url = URL.createObjectURL(pdfBlob);
-              const link = document.createElement('a');
+              const link = document.createElement("a");
               link.href = url;
               link.download = `${pdfFilename}.pdf`;
               document.body.appendChild(link);
@@ -545,7 +668,7 @@ const Menu: React.FC<{
           console.error("Error processing server PDF for sharing:", error);
           // Fallback to direct download
           const url = URL.createObjectURL(pdfBlob);
-          const link = document.createElement('a');
+          const link = document.createElement("a");
           link.href = url;
           link.download = `${pdfFilename}.pdf`;
           document.body.appendChild(link);
@@ -559,7 +682,7 @@ const Menu: React.FC<{
       } else {
         // Desktop behavior - direct download
         const url = URL.createObjectURL(pdfBlob);
-        const link = document.createElement('a');
+        const link = document.createElement("a");
         link.href = url;
         link.download = `${pdfFilename}.pdf`;
         document.body.appendChild(link);
@@ -596,47 +719,6 @@ const Menu: React.FC<{
 
   const showServerPDFNameDialog = () => {
     setShowAlert12(true);
-  };
-
-  const doSaveToServer = async (filename) => {
-    if (filename) {
-      if (await _validateName(filename)) {
-        try {
-          setToastMessage("Saving to server...");
-          setShowToast1(true);
-
-          const content = AppGeneral.getSpreadsheetContent();
-
-          // Import the server files service
-          const { cloudService } = await import(
-            "../../services/cloud-service.js"
-          );
-
-          // Check if user is authenticated
-          if (!cloudService.isAuthenticated()) {
-            setToastMessage("Please login to server files first");
-            setShowToast1(true);
-            return;
-          }
-
-          // Upload to server
-          const result = await cloudService.uploadInvoiceData(
-            filename,
-            content,
-            billType
-          );
-
-          setToastMessage(`File saved to server as server_${filename}`);
-          setShowToast1(true);
-        } catch (error) {
-          console.error("Error saving to server:", error);
-          setToastMessage("Failed to save to server. Please try again.");
-          setShowToast1(true);
-        }
-      } else {
-        setShowToast1(true);
-      }
-    }
   };
 
   const sendEmail = () => {
@@ -686,17 +768,15 @@ const Menu: React.FC<{
   const getMenuButtons = () => {
     const baseButtons = [];
 
-    // Only add print button for non-mobile devices
-    if (!isPlatform("mobile") && !isPlatform("hybrid")) {
-      baseButtons.push({
-        text: "Print",
-        icon: print,
-        handler: () => {
-          doPrint();
-          console.log("Print clicked");
-        },
-      });
-    }
+    // Add print button for all platforms
+    baseButtons.push({
+      text: "Print",
+      icon: print,
+      handler: () => {
+        doPrint();
+        console.log("Print clicked");
+      },
+    });
 
     // Add remaining buttons
     baseButtons.push(
@@ -731,7 +811,7 @@ const Menu: React.FC<{
           showServerPDFNameDialog();
           console.log("Export as PDF via Server clicked");
         },
-      },
+      }
       // {
       //   text: "Email",
       //   icon: mail,
@@ -740,14 +820,6 @@ const Menu: React.FC<{
       //     console.log("Email clicked");
       //   },
       // },
-      {
-        text: "Save to Server",
-        icon: server,
-        handler: () => {
-          setShowAlert11(true);
-          console.log("Save to Server clicked");
-        },
-      }
     );
 
     return baseButtons;
@@ -773,7 +845,6 @@ const Menu: React.FC<{
         showAlert8={showAlert8}
         showAlert9={showAlert9}
         showAlert10={showAlert10}
-        showAlert11={showAlert11}
         showAlert12={showAlert12}
         // Alert setters
         setShowAlert1={setShowAlert1}
@@ -785,7 +856,6 @@ const Menu: React.FC<{
         setShowAlert8={setShowAlert8}
         setShowAlert9={setShowAlert9}
         setShowAlert10={setShowAlert10}
-        setShowAlert11={setShowAlert11}
         setShowAlert12={setShowAlert12}
         // Toast states
         showToast1={showToast1}
@@ -812,12 +882,9 @@ const Menu: React.FC<{
         doGeneratePDF={doGeneratePDF}
         doGenerateCSV={doGenerateCSV}
         doExportAllSheetsAsPDF={doExportAllSheetsAsPDF}
-        doSaveToServer={doSaveToServer}
         doGenerateServerPDF={doGenerateServerPDF}
         generateInvoiceFilename={generateInvoiceFilename}
         selectInputText={selectInputText}
-        // Alert control states
-        showAlert11Open={showAlert11}
       />
     </React.Fragment>
   );
