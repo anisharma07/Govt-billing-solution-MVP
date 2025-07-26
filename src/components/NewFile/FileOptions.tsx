@@ -54,8 +54,6 @@ import {
   isQuotaExceededError,
   getQuotaExceededMessage,
 } from "../../utils/helper";
-import { s } from "vite/dist/node/types.d-jgA8ss1A.js";
-// ...existing imports...
 
 interface FileOptionsProps {
   showActionsPopover: boolean;
